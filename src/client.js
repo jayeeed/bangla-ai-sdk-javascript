@@ -101,16 +101,42 @@ class ApiKeysResource {
    * @param {Object} options
    * @param {string} options.name
    * @param {string[]} [options.scopes]
+   * @param {string} [options.rateLimitTier]
+   * @param {string} [options.rate_limit_tier]
+   * @param {string[]} [options.allowedIps]
+   * @param {string[]} [options.allowed_ips]
+   * @param {string[]} [options.allowedOrigins]
+   * @param {string[]} [options.allowed_origins]
    * @param {number} [options.expiresInDays]
+   * @param {number} [options.expires_in_days]
    * @returns {Promise<{ id: string, name: string, key_prefix: string, raw_api_key: string, scopes: string[], is_active: boolean }>}
    */
-  async create({ name, scopes = ["all"], expiresInDays = 365 } = {}) {
+  async create({
+    name,
+    scopes = ["all"],
+    rateLimitTier,
+    rate_limit_tier,
+    allowedIps,
+    allowed_ips,
+    allowedOrigins,
+    allowed_origins,
+    expiresInDays = 365,
+    expires_in_days,
+  } = {}) {
+    const payload = {
+      name,
+      scopes,
+      expires_in_days: expires_in_days ?? expiresInDays,
+    };
+    const tier = rateLimitTier ?? rate_limit_tier;
+    if (tier !== undefined) payload.rate_limit_tier = tier;
+    const ips = allowedIps ?? allowed_ips;
+    if (ips !== undefined) payload.allowed_ips = ips;
+    const origins = allowedOrigins ?? allowed_origins;
+    if (origins !== undefined) payload.allowed_origins = origins;
+
     return await this._transport.request("POST", "/v1/api-keys", {
-      json: {
-        name,
-        scopes,
-        expires_in_days: expiresInDays,
-      },
+      json: payload,
     });
   }
 
@@ -283,17 +309,41 @@ class ChatsResource {
    * @param {Object} [options]
    * @param {string} [options.title]
    * @param {string} [options.instructions]
+   * @param {boolean} [options.enableWebSearch]
+   * @param {boolean} [options.enable_web_search]
+   * @param {string[]} [options.customToolNames]
+   * @param {string[]} [options.custom_tool_names]
+   * @param {Object} [options.profile]
    * @param {string} [options.primaryService]
    * @param {Record<string, any>} [options.metadata]
    */
-  async create({ title = "New Chat", instructions, primaryService = "llm", metadata = {} } = {}) {
+  async create({
+    title = "New Chat",
+    instructions,
+    enableWebSearch = false,
+    enable_web_search,
+    customToolNames = [],
+    custom_tool_names,
+    profile,
+    primaryService = "llm",
+    metadata = {},
+  } = {}) {
+    const chatProfile = profile || {
+      instructions: instructions || "",
+      enable_web_search: enable_web_search ?? enableWebSearch,
+      custom_tool_names: custom_tool_names ?? customToolNames,
+    };
+
+    const payload = {
+      title,
+      profile: chatProfile,
+      primary_service: primaryService,
+    };
+    if (instructions) payload.instructions = instructions;
+    if (metadata && Object.keys(metadata).length > 0) payload.metadata = metadata;
+
     return await this._transport.request("POST", "/v1/chats", {
-      json: {
-        title,
-        instructions,
-        primary_service: primaryService,
-        metadata,
-      },
+      json: payload,
     });
   }
 
@@ -323,11 +373,84 @@ class ChatsResource {
   }
 
   /**
+   * Updates chat thread title, archived flag, or context state.
+   * @param {string} chatId
+   * @param {Object} [options]
+   * @param {string} [options.title]
+   * @param {boolean} [options.isArchived]
+   * @param {boolean} [options.is_archived]
+   * @param {Record<string, any>} [options.contextState]
+   * @param {Record<string, any>} [options.context_state]
+   */
+  async update(chatId, { title, isArchived, is_archived, contextState, context_state } = {}) {
+    const payload = {};
+    if (title !== undefined) payload.title = title;
+    const archived = isArchived ?? is_archived;
+    if (archived !== undefined) payload.is_archived = archived;
+    const state = contextState ?? context_state;
+    if (state !== undefined) payload.context_state = state;
+
+    return await this._transport.request("PATCH", `/v1/chats/${encodeURIComponent(chatId)}`, {
+      json: payload,
+    });
+  }
+
+  /**
    * Deletes / archives a chat thread.
    * @param {string} chatId
    */
   async delete(chatId) {
     return await this._transport.request("DELETE", `/v1/chats/${encodeURIComponent(chatId)}`);
+  }
+
+  /**
+   * Lists chronological conversation turns along the active or specified branch.
+   * @param {string} chatId
+   * @param {Object} [options]
+   * @param {string} [options.branchId]
+   * @param {string} [options.branch_id]
+   */
+  async messages(chatId, { branchId, branch_id } = {}) {
+    const params = {};
+    const bId = branchId ?? branch_id;
+    if (bId) params.branch_id = bId;
+
+    return await this._transport.request("GET", `/v1/chats/${encodeURIComponent(chatId)}/messages`, {
+      params,
+    });
+  }
+
+  /**
+   * Forks the conversation tree into a new branch from a prior turn.
+   * @param {string} chatId
+   * @param {Object} options
+   * @param {string} options.sourceBranchId
+   * @param {string} [options.source_branch_id]
+   * @param {string} [options.action]
+   * @param {string} [options.targetTurnId]
+   * @param {string} [options.target_turn_id]
+   * @param {string} [options.editedContent]
+   * @param {string} [options.edited_content]
+   */
+  async createBranch(chatId, {
+    sourceBranchId,
+    source_branch_id,
+    action = "edit",
+    targetTurnId,
+    target_turn_id,
+    editedContent,
+    edited_content,
+  } = {}) {
+    const payload = {
+      source_branch_id: sourceBranchId ?? source_branch_id,
+      action,
+      target_turn_id: targetTurnId ?? target_turn_id,
+      edited_content: editedContent ?? edited_content,
+    };
+
+    return await this._transport.request("POST", `/v1/chats/${encodeURIComponent(chatId)}/branches`, {
+      json: payload,
+    });
   }
 }
 
@@ -447,6 +570,67 @@ class ASRResource {
     return await this._transport.request("POST", "/v1/asr/transcribe/youtube", {
       json: { url, diarize, include_audio: includeAudio },
     });
+  }
+
+  /**
+   * Initiates a stateful live PCM16 speech recognition stream.
+   * @param {Object} [options]
+   * @param {number} [options.sampleRate]
+   * @param {number} [options.sample_rate]
+   * @returns {Promise<{ session_id: string, sample_rate: number }>}
+   */
+  async createStream({ sampleRate = 16000, sample_rate } = {}) {
+    return await this._transport.request("POST", "/v1/asr/streams", {
+      params: { sample_rate: sample_rate ?? sampleRate },
+    });
+  }
+
+  /**
+   * Submits raw 16kHz signed 16-bit little-endian mono PCM audio chunk.
+   * @param {string} sessionId
+   * @param {Uint8Array | Buffer} pcmBytes
+   * @param {Object} [options]
+   * @param {number} [options.sampleRate]
+   * @param {number} [options.sample_rate]
+   * @param {number} [options.generation]
+   * @param {number} [options.chunkSequence]
+   * @param {number} [options.chunk_sequence]
+   * @returns {Promise<{ transcript: string, partial_text: string, final_text: string, final_words: any[], event: string, turn_id?: string }>}
+   */
+  async streamChunk(sessionId, pcmBytes, {
+    sampleRate = 16000,
+    sample_rate,
+    generation = 0,
+    chunkSequence = 0,
+    chunk_sequence,
+  } = {}) {
+    return await this._transport.request("POST", `/v1/asr/streams/${encodeURIComponent(sessionId)}/chunk/pcm16`, {
+      body: pcmBytes,
+      headers: { "Content-Type": "application/octet-stream" },
+      params: {
+        sample_rate: sample_rate ?? sampleRate,
+        generation,
+        chunk_sequence: chunk_sequence ?? chunkSequence,
+      },
+    });
+  }
+
+  /**
+   * Finalizes live ASR stream and records usage.
+   * @param {string} sessionId
+   * @returns {Promise<any>}
+   */
+  async finishStream(sessionId) {
+    return await this._transport.request("POST", `/v1/asr/streams/${encodeURIComponent(sessionId)}/finish`);
+  }
+
+  /**
+   * Aborts and releases a streaming session.
+   * @param {string} sessionId
+   * @returns {Promise<any>}
+   */
+  async abortStream(sessionId) {
+    return await this._transport.request("DELETE", `/v1/asr/streams/${encodeURIComponent(sessionId)}`);
   }
 }
 
@@ -653,6 +837,10 @@ export class BanglaAI {
     this.asr = new ASRResource(this._transport);
     this.tts = new TTSResource(this._transport);
     this.sts = new STSResource(this._transport);
+
+    // Snake_case aliases for Python ecosystem compatibility
+    this.api_keys = this.apiKeys;
+    this.ws_tickets = this.wsTickets;
   }
 
   /**
@@ -670,4 +858,9 @@ export class BanglaAI {
   async ready() {
     return await this._transport.request("GET", "/readyz");
   }
+
+  /**
+   * Closes underlying client resources (no-op for Fetch API; mirrors Python close()).
+   */
+  close() {}
 }

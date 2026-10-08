@@ -23,9 +23,13 @@ export interface ApiKey {
   key_prefix: string;
   raw_api_key?: string;
   scopes: string[];
+  rate_limit_tier?: string;
+  allowed_ips?: string[];
+  allowed_origins?: string[];
   is_active: boolean;
   expires_at?: string;
   created_at?: string;
+  last_used_at?: string;
 }
 
 export interface WsTicket {
@@ -42,9 +46,37 @@ export interface ChatSession {
   primary_service: string;
   is_archived: boolean;
   active_branch_id?: string;
+  context_state?: Record<string, any>;
   metadata?: Record<string, any>;
   created_at?: string;
   updated_at?: string;
+}
+
+export interface Turn {
+  id: string;
+  user_id: string;
+  chat_id?: string;
+  branch_id?: string;
+  service: string;
+  input_modality: string;
+  output_modality: string;
+  input_content: string;
+  input_attachment_ids?: string[];
+  output_text: string;
+  output_items?: Array<Record<string, any>>;
+  usage?: Record<string, any>;
+  status: string;
+  error_code?: string;
+  created_at?: string;
+  completed_at?: string;
+}
+
+export interface ChatBranch {
+  id: string;
+  chat_id: string;
+  parent_branch_id?: string;
+  fork_after_turn_id?: string;
+  created_at?: string;
 }
 
 export interface StreamChunk {
@@ -133,10 +165,28 @@ export interface VoiceReference {
   transcript?: string;
 }
 
+export interface StreamSession {
+  session_id: string;
+  sample_rate: number;
+}
+
+export interface ASRStreamChunk {
+  transcript: string;
+  partial_text: string;
+  final_text?: string;
+  final_words?: Array<Record<string, any>>;
+  event: string;
+  turn_id?: string;
+}
+
 export interface TTSDiscovery {
-  speakers: string[];
-  emotions: string[];
-  formats: string[];
+  speakers?: string[];
+  emotions?: string[];
+  formats?: string[];
+  models?: string[];
+  voices?: string[];
+  default_voice?: string;
+  sample_rate?: number;
 }
 
 export class MeResource {
@@ -146,7 +196,18 @@ export class MeResource {
 
 export class ApiKeysResource {
   list(): Promise<ApiKey[]>;
-  create(options: { name: string; scopes?: string[]; expiresInDays?: number }): Promise<ApiKey>;
+  create(options: {
+    name: string;
+    scopes?: string[];
+    rateLimitTier?: string;
+    rate_limit_tier?: string;
+    allowedIps?: string[];
+    allowed_ips?: string[];
+    allowedOrigins?: string[];
+    allowed_origins?: string[];
+    expiresInDays?: number;
+    expires_in_days?: number;
+  }): Promise<ApiKey>;
   delete(keyId: string): Promise<void>;
 }
 
@@ -172,10 +233,37 @@ export class ChatsResource {
   readonly turns: ChatTurnsResource;
   readonly attachments: ChatAttachmentsResource;
 
-  create(options?: { title?: string; instructions?: string; primaryService?: string; metadata?: Record<string, any> }): Promise<ChatSession>;
+  create(options?: {
+    title?: string;
+    instructions?: string;
+    enableWebSearch?: boolean;
+    enable_web_search?: boolean;
+    customToolNames?: string[];
+    custom_tool_names?: string[];
+    profile?: Record<string, any>;
+    primaryService?: string;
+    metadata?: Record<string, any>;
+  }): Promise<ChatSession>;
   list(options?: { limit?: number; offset?: number; includeArchived?: boolean }): Promise<ChatSession[]>;
   get(chatId: string): Promise<ChatSession>;
+  update(chatId: string, options?: {
+    title?: string;
+    isArchived?: boolean;
+    is_archived?: boolean;
+    contextState?: Record<string, any>;
+    context_state?: Record<string, any>;
+  }): Promise<ChatSession>;
   delete(chatId: string): Promise<void>;
+  messages(chatId: string, options?: { branchId?: string; branch_id?: string }): Promise<Turn[]>;
+  createBranch(chatId: string, options: {
+    sourceBranchId?: string;
+    source_branch_id?: string;
+    action?: string;
+    targetTurnId?: string;
+    target_turn_id?: string;
+    editedContent?: string;
+    edited_content?: string;
+  }): Promise<ChatSession>;
 }
 
 export class OCRResource {
@@ -188,6 +276,10 @@ export class OCRResource {
 export class ASRResource {
   transcribe(file: string | Uint8Array | Blob | File, options?: { filename?: string; diarize?: boolean }): Promise<ASRResult>;
   transcribeYoutube(options: { url: string; diarize?: boolean; includeAudio?: boolean }): Promise<YouTubeASRResult>;
+  createStream(options?: { sampleRate?: number; sample_rate?: number }): Promise<StreamSession>;
+  streamChunk(sessionId: string, pcmBytes: Uint8Array | Buffer, options?: { sampleRate?: number; sample_rate?: number; generation?: number; chunkSequence?: number; chunk_sequence?: number }): Promise<ASRStreamChunk>;
+  finishStream(sessionId: string): Promise<Record<string, any>>;
+  abortStream(sessionId: string): Promise<void>;
 }
 
 export class TTSResource {
@@ -209,7 +301,9 @@ export class BanglaAI {
   constructor(config?: ClientOptions);
   readonly me: MeResource;
   readonly apiKeys: ApiKeysResource;
+  readonly api_keys: ApiKeysResource;
   readonly wsTickets: WsTicketsResource;
+  readonly ws_tickets: WsTicketsResource;
   readonly chats: ChatsResource;
   readonly ocr: OCRResource;
   readonly asr: ASRResource;
@@ -218,6 +312,7 @@ export class BanglaAI {
 
   health(): Promise<{ status: string; service: string; version: string }>;
   ready(): Promise<{ status: string; timestamp: number; checks: Record<string, string> }>;
+  close(): void;
 }
 
 export default BanglaAI;

@@ -174,6 +174,8 @@ export class Transport {
       if (options.json !== undefined) {
         headers["Content-Type"] = "application/json";
         body = JSON.stringify(options.json);
+      } else if (options.body !== undefined) {
+        body = options.body;
       }
 
       try {

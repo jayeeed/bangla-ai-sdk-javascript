@@ -3,7 +3,7 @@
 ![Async](https://img.shields.io/badge/async-supported-blue)
 ![Node.js](https://img.shields.io/badge/node-18+-green)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
-[![npm version](https://img.shields.io/badge/npm-0.1.0-orange.svg)](https://www.npmjs.com/package/bangla-ai)
+[![npm version](https://img.shields.io/badge/npm-0.1.1-orange.svg)](https://www.npmjs.com/package/bangla-ai)
 
 The official Node.js, Browser, and TypeScript SDK for the **Bangla AI Gateway**. Easily connect your applications to state-of-the-art Bengali language AI microservices:
 - 💬 **Large Language Model (LLM)**: Multi-branch conversation trees and token-by-token SSE streaming.
@@ -174,6 +174,21 @@ const ytResult = await client.asr.transcribeYoutube({
 });
 console.log("Video Title:", ytResult.title);
 console.log("Diarization:", ytResult.diarization_text);
+```
+
+#### Real-Time PCM16 Audio Stream
+```javascript
+// 1. Initialize streaming session
+const session = await client.asr.createStream({ sampleRate: 16000 });
+
+// 2. Stream 16kHz mono PCM chunks
+const chunk = await client.asr.streamChunk(session.session_id, pcmBuffer, {
+  chunkSequence: 1,
+});
+console.log("Partial:", chunk.partial_text);
+
+// 3. Finalize stream
+await client.asr.finishStream(session.session_id);
 ```
 
 ---
