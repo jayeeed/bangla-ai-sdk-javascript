@@ -1,0 +1,51 @@
+{
+  "name": "bangla-ai",
+  "version": "0.1.0",
+  "description": "Official JavaScript/TypeScript SDK for the Bangla AI Gateway (LLM, OCR, ASR, TTS, STS).",
+  "main": "src/index.js",
+  "module": "src/index.js",
+  "types": "src/index.d.ts",
+  "type": "module",
+  "files": [
+    "src",
+    "README.md",
+    "LICENSE"
+  ],
+  "scripts": {
+    "test": "node test.js"
+  },
+  "keywords": [
+    "bangla",
+    "bengali",
+    "ai",
+    "bangla-ai",
+    "llm",
+    "ocr",
+    "asr",
+    "tts",
+    "sts",
+    "speech",
+    "livekit",
+    "gateway"
+  ],
+  "author": "Jayed <jayedbinjahangir@gmail.com>",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/jayeeed/bangla-ai-sdk-javascript"
+  },
+  "homepage": "https://github.com/jayeeed/bangla-ai-sdk-javascript",
+  "exports": {
+    ".": {
+      "types": "./src/index.d.ts",
+      "import": "./src/index.js",
+      "default": "./src/index.js"
+    }
+  },
+  "engines": {
+    "node": ">=18.0.0"
+  },
+  "devDependencies": {
+    "dotenv": "^16.4.5"
+  }
+}
