@@ -32,7 +32,7 @@
   "license": "MIT",
   "repository": {
     "type": "git",
-    "url": "https://github.com/jayeeed/bangla-ai-sdk-javascript"
+    "url": "git+https://github.com/jayeeed/bangla-ai-sdk-javascript.git"
   },
   "homepage": "https://github.com/jayeeed/bangla-ai-sdk-javascript",
   "exports": {
