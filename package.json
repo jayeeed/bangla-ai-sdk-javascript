@@ -1,6 +1,6 @@
 {
   "name": "bangla-ai",
-  "version": "0.1.1",
+  "version": "0.2.0",
   "description": "Official JavaScript/TypeScript SDK for the Bangla AI Gateway (LLM, OCR, ASR, TTS, STS).",
   "main": "src/index.js",
   "module": "src/index.js",
@@ -12,7 +12,8 @@
     "LICENSE"
   ],
   "scripts": {
-    "test": "node test.js"
+    "test": "node tests/client.test.js",
+    "test:live": "node test.js"
   },
   "keywords": [
     "bangla",

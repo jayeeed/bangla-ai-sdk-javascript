@@ -3,14 +3,15 @@
 ![Async](https://img.shields.io/badge/async-supported-blue)
 ![Node.js](https://img.shields.io/badge/node-18+-green)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
-[![npm version](https://img.shields.io/badge/npm-0.1.1-orange.svg)](https://www.npmjs.com/package/bangla-ai)
+[![npm version](https://img.shields.io/badge/npm-0.1.0-orange.svg)](https://www.npmjs.com/package/bangla-ai)
 
 The official Node.js, Browser, and TypeScript SDK for the **Bangla AI Gateway**. Easily connect your applications to state-of-the-art Bengali language AI microservices:
-- 💬 **Large Language Model (LLM)**: Multi-branch conversation trees and token-by-token SSE streaming.
-- 📄 **Document OCR**: High-accuracy Bengali document parsing with layout detection, bounding boxes, and Markdown output.
-- 🎙️ **Speech-to-Text (ASR)**: Nemotron Bengali ASR for offline audio files, YouTube transcription, and real-time streams.
-- 🔊 **Speech Synthesis (TTS)**: Higgs TTS 3 (4B) neural voice synthesis returning 24 kHz WAV/PCM audio and zero-shot voice cloning.
-- 🗣️ **Speech-to-Speech (STS)**: LiveKit SFU room token minting and custom voice clone references.
+- 💬 **Large Language Model (LLM)**: Multi-branch conversation trees, message turn history, automatic idempotency keys, and token-by-token SSE streaming.
+- 📄 **Document OCR**: High-accuracy Bengali document parsing with layout detection, bounding boxes, synchronous processing, and asynchronous batch jobs.
+- 🎙️ **Speech-to-Text (ASR)**: Nemotron Bengali ASR for offline audio files, asynchronous batch jobs, YouTube transcription, and live 16 kHz PCM16 streaming.
+- 🔊 **Speech Synthesis (TTS)**: Higgs TTS 3 (4B) neural voice synthesis returning 24 kHz WAV/PCM audio, asynchronous jobs, zero-shot voice cloning, and stateful incremental text sessions.
+- 🗣️ **Speech-to-Speech (STS)**: LiveKit SFU WebRTC room token minting and zero-shot custom voice conditioning.
+- 🔐 **Auth & API Keys**: User profiles, Google/Firebase authentication synchronization, API keys CRUD, and single-use WebSocket tickets.
 
 ---
 
@@ -18,10 +19,12 @@ The official Node.js, Browser, and TypeScript SDK for the **Bangla AI Gateway**.
 
 - **✅ Native Fetch (Zero Runtime Dependencies)**: Built on standard modern Fetch API (`fetch`, `FormData`, `ReadableStream`) supported out-of-the-box in Node 18+, Bun, Deno, and modern browsers.
 - **⚡ Real-Time Streaming**: First-class Server-Sent Events (SSE) streaming for LLM tokens and 24 kHz raw PCM audio chunks for TTS using standard `for await (const chunk of stream)`.
-- **🛡️ Robust Error Handling**: Clean RFC 7807 typed exceptions (`RateLimitError`, `AuthenticationError`, `UpstreamServiceError`, etc.) with automatic retry on transient failures.
+- **🔄 Long-Running Async Jobs**: High-level `waitForJob()` helpers for ASR, OCR, and TTS async batch jobs with automatic polling and error resolution.
+- **🎙️ Live ASR Streaming**: Stateful sessions supporting raw 16 kHz mono signed 16-bit PCM chunks with generation-based checkpointing.
+- **🗣️ Reusable Voice Cloning**: Upload short reference audio samples once and reuse the generated `voice_id` across TTS and STS.
+- **🛡️ Robust Error Handling**: Clean RFC 7807 typed exceptions (`RateLimitError`, `AuthenticationError`, `UpstreamServiceError`, etc.) with automatic exponential backoff retry.
 - **🔐 Flexible Authentication**: Auto-discovers credentials from `BANGLA_AI_API_KEY` environment variables or `.env` file via `dotenv`.
 - **📘 Full TypeScript Definitions**: First-class `.d.ts` declaration file included with autocompletion, type safety, and JSDoc documentation.
-- **📦 npm Deploy Ready**: Out-of-the-box standard `package.json`, automated GitHub Actions workflow, and smoke verification suite.
 
 ---
 
@@ -47,7 +50,7 @@ bun add bangla-ai
 
 ### 1. Configure Environment
 
-Copy [.env.example](.env.example) to `.env` and set your API key:
+Copy `.env.example` to `.env` and set your API key:
 
 ```bash
 cp .env.example .env
@@ -76,17 +79,7 @@ const chat = await client.chats.create({ title: "Introduction" });
 const reply = await client.chats.turns.create(chat.id, {
   content: "বাংলা ব্যাকরণ অনুযায়ী সমাস কাকে বলে?",
 });
-console.log("AI:", reply);
-```
-
----
-
-## 🧪 Smoke Testing
-
-Run the included verification script to test your gateway connection and verify all endpoints:
-
-```bash
-node test.js
+console.log("AI:", reply.content);
 ```
 
 ---
@@ -102,7 +95,7 @@ const chat = await client.chats.create({
   instructions: "আপনি একজন অভিজ্ঞ পাইথন ও জাভাস্ক্রিপ্ট প্রোগ্রামার। প্রাতিষ্ঠানিক বাংলায় উত্তর দিন।",
 });
 
-// Stream tokens in real time
+// Stream tokens in real time (automatically includes RFC 4122 Idempotency-Key)
 process.stdout.write("AI: ");
 for await (const chunk of client.chats.turns.stream(chat.id, {
   content: "জাভাস্ক্রিপ্টে প্রমিজ (Promise) কী এবং এটি কীভাবে কাজ করে?",
@@ -114,7 +107,7 @@ for await (const chunk of client.chats.turns.stream(chat.id, {
 console.log();
 ```
 
-#### Uploading Chat Attachments (PDF / Images)
+#### Uploading Chat Attachments & Message History
 ```javascript
 // Upload document to MinIO
 const att = await client.chats.attachments.upload(chat.id, "./invoice.pdf");
@@ -125,7 +118,20 @@ const reply = await client.chats.turns.create(chat.id, {
   content: "এই ইনভয়েসের মোট টাকার পরিমাণ কত?",
   attachmentIds: [att.id],
 });
-console.log("AI:", reply);
+console.log("AI:", reply.content);
+
+// Retrieve message turn history
+const history = await client.chats.messages(chat.id);
+for (const turn of history) {
+  console.log(`[${turn.status}] User: ${turn.input_content} -> AI: ${turn.output_text}`);
+}
+
+// Fork conversation into a new branch
+const branch = await client.chats.createBranch(chat.id, {
+  sourceBranchId: chat.active_branch_id,
+  targetTurnId: reply.turnId,
+  action: "regenerate",
+});
 ```
 
 ---
@@ -137,7 +143,7 @@ console.log("AI:", reply);
 const result = await client.ocr.process("./nid_card.jpg");
 console.log("Extracted Markdown:\n", result.markdown);
 
-// Inspect individual layout regions and bounding boxes
+// Inspect layout regions and bounding boxes
 for (const page of result.pages || []) {
   for (const region of page.regions || []) {
     console.log(`[${region.label}] (${region.box_2d}): ${region.text}`);
@@ -166,6 +172,13 @@ console.log("Transcript:", result.text);
 console.log(`Duration: ${result.duration_seconds}s | Processed in: ${result.processing_time_ms}ms`);
 ```
 
+#### Asynchronous Long Audio Transcription
+```javascript
+// Submit job and poll until completion
+const jobStatus = await client.asr.waitForJob("./long_lecture_2hours.mp3", { diarize: true });
+console.log("Finished ASR:", jobStatus.result?.text);
+```
+
 #### YouTube Video Audio Transcription
 ```javascript
 const ytResult = await client.asr.transcribeYoutube({
@@ -176,19 +189,20 @@ console.log("Video Title:", ytResult.title);
 console.log("Diarization:", ytResult.diarization_text);
 ```
 
-#### Real-Time PCM16 Audio Stream
+#### Live 16 kHz PCM16 Streaming
 ```javascript
-// 1. Initialize streaming session
+// 1. Start streaming session
 const session = await client.asr.createStream({ sampleRate: 16000 });
 
-// 2. Stream 16kHz mono PCM chunks
-const chunk = await client.asr.streamChunk(session.session_id, pcmBuffer, {
-  chunkSequence: 1,
-});
+// 2. Feed 16-bit mono PCM chunks as they arrive from microphone
+const chunk = await client.asr.streamChunkPcm(session.session_id, pcmBytes);
 console.log("Partial:", chunk.partial_text);
+if (chunk.final_text) {
+  console.log("Final segment:", chunk.final_text);
+}
 
 // 3. Finalize stream
-await client.asr.finishStream(session.session_id);
+const res = await client.asr.finishStream(session.session_id);
 ```
 
 ---
@@ -201,7 +215,7 @@ await client.asr.finishStream(session.session_id);
 await client.tts.synthesizeToFile(
   "স্বাগতম! বাংলা এআই প্ল্যাটফর্মে আপনাকে স্বাগতম।",
   "./welcome.wav",
-  { voice: "female", emotion: "happy" }
+  { voice: "female" }
 );
 ```
 
@@ -213,15 +227,47 @@ for await (const pcmChunk of client.tts.streamPcm("বাংলা ভাষা�
 }
 ```
 
-#### Zero-Shot Voice Cloning
+#### Reusable Voice Cloning & Upload
 ```javascript
-const audioBytes = await client.tts.advanced({
-  input: "ক্লোন করা কণ্ঠস্বরে তৈরি বাক্য।",
-  referenceAudio: {
-    audio_base64: "UklGRiQAAABXQVZFZm10IBAAAA...",
-    transcript: "রেফারেন্স অডিওতে বলা বাক্য",
-  },
+// Upload reference audio to clone a reusable voice profile
+const voiceInfo = await client.tts.createVoice("./my_voice.wav", { name: "My Voice" });
+const voiceId = voiceInfo.voice_id;
+
+// Synthesize speech using the cloned voice ID
+const audioBytes = await client.tts.synthesize({
+  text: "আমার ক্লোন করা কণ্ঠে এই বাক্যটি বলা হচ্ছে।",
+  voiceId: voiceId,
 });
+```
+
+#### Asynchronous Synthesis Batch Jobs
+```javascript
+// Enqueue long paragraph and wait for synthesized audio bytes
+const audioBytes = await client.tts.waitForJob("দীর্ঘ বাংলা অনুচ্ছেদ যা সিন্থেসাইজ হতে সময় নেয়।");
+await fs.writeFile("./long_speech.wav", audioBytes);
+```
+
+#### Incremental Text Streaming Sessions
+```javascript
+// Create low-latency incremental session
+const session = await client.tts.createSession({ voice: "male" });
+
+// Feed LLM tokens as they arrive
+await client.tts.sendSessionText(session.session_id, "প্রথম বাক্য।");
+await client.tts.sendSessionText(session.session_id, "দ্বিতীয় বাক্য।");
+
+// Finish session
+await client.tts.finishSession(session.session_id);
+await client.tts.deleteSession(session.session_id);
+```
+
+#### Discover Capabilities & Queue Load
+```javascript
+const caps = await client.tts.capabilities();
+console.log("Supported formats:", caps.response_formats);
+
+const queue = await client.tts.queue();
+console.log(`Queue load: ${queue.active} active / ${queue.capacity} capacity`);
 ```
 
 ---
@@ -244,7 +290,7 @@ console.log("LiveKit URL:", roomAccess.livekitUrl);
 console.log("Access Token:", roomAccess.token);
 console.log("Room Name:   ", roomAccess.roomName);
 
-// Connect with LiveKit Client SDK:
+// Connect with any LiveKit Client SDK:
 // import { Room } from "livekit-client";
 // const room = new Room();
 // await room.connect(roomAccess.url, roomAccess.token);
@@ -252,11 +298,15 @@ console.log("Room Name:   ", roomAccess.roomName);
 
 ---
 
-### 6. Managing Profile & Developer API Keys
+### 6. Profile, Google Auth & API Keys
 
 ```javascript
-// Update display name
-await client.me.update({ displayName: "Rahim Ahmed" });
+// Synchronize Google / Firebase ID token
+const authStatus = await client.auth.syncGoogle({ idToken: "firebase_jwt_token_here" });
+console.log("Synced User:", authStatus.user?.email);
+
+// Update display settings
+await client.me.update({ displayName: "Rahim Ahmed", avatarUrl: "https://example.com/avatar.png" });
 
 // Provision a new API key
 const newKey = await client.apiKeys.create({
@@ -315,20 +365,15 @@ try {
 
 ---
 
-## 🚀 Automated npm Deployment
+## 🧪 Testing
 
-This package includes an automated GitHub Actions release workflow in [`.github/workflows/npm-publish.yml`](.github/workflows/npm-publish.yml).
+```bash
+# Run unit tests
+npm test
 
-To publish automatically to npm:
-1. In your GitHub repository, add your npm access token under **Settings > Secrets and variables > Actions** as `NPM_TOKEN`.
-2. Bump the `version` field in `package.json`.
-3. Commit and push to `main`:
-   ```bash
-   git add .
-   git commit -m "release: v0.1.0"
-   git push origin main
-   ```
-4. GitHub Actions will verify and publish the package directly to the npm public registry.
+# Run live gateway verification suite
+npm run test:live
+```
 
 ---
 

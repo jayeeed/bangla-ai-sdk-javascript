@@ -171,11 +171,14 @@ export class Transport {
       const headers = this.getHeaders(options.headers);
       let body = undefined;
 
-      if (options.json !== undefined) {
+      if (options.body !== undefined) {
+        body = options.body;
+        if (!headers["Content-Type"]) {
+          headers["Content-Type"] = "application/octet-stream";
+        }
+      } else if (options.json !== undefined) {
         headers["Content-Type"] = "application/json";
         body = JSON.stringify(options.json);
-      } else if (options.body !== undefined) {
-        body = options.body;
       }
 
       try {
@@ -286,7 +289,12 @@ export class Transport {
     headers["Accept"] = "*/*";
 
     let body = undefined;
-    if (options.json !== undefined) {
+    if (options.body !== undefined) {
+      body = options.body;
+      if (!headers["Content-Type"]) {
+        headers["Content-Type"] = "application/octet-stream";
+      }
+    } else if (options.json !== undefined) {
       headers["Content-Type"] = "application/json";
       body = JSON.stringify(options.json);
     }
@@ -333,7 +341,9 @@ export class Transport {
     headers["Cache-Control"] = "no-cache";
 
     let body = undefined;
-    if (options.json !== undefined) {
+    if (options.body !== undefined) {
+      body = options.body;
+    } else if (options.json !== undefined) {
       headers["Content-Type"] = "application/json";
       body = JSON.stringify(options.json);
     }
@@ -383,24 +393,15 @@ export class Transport {
 
           let eventName = "message";
           let dataLines = [];
-          let hasData = false;
 
           const lines = message.split("\n");
           for (const line of lines) {
             const trimmed = line.trim();
-            if (trimmed.startsWith(":")) {
-              continue; // SSE heartbeat comment
-            }
             if (trimmed.startsWith("event:")) {
               eventName = trimmed.slice(6).trim();
             } else if (trimmed.startsWith("data:")) {
-              hasData = true;
               dataLines.push(trimmed.slice(5).trim());
             }
-          }
-
-          if (!hasData && eventName === "message") {
-            continue;
           }
 
           const rawData = dataLines.join("\n");
@@ -428,12 +429,7 @@ export class Transport {
         }
       }
     } finally {
-      controller.abort();
-      try {
-        reader.releaseLock();
-      } catch {
-        // Safe lock release
-      }
+      reader.releaseLock();
     }
   }
 
@@ -448,7 +444,9 @@ export class Transport {
     const headers = this.getHeaders(options.headers);
 
     let body = undefined;
-    if (options.json !== undefined) {
+    if (options.body !== undefined) {
+      body = options.body;
+    } else if (options.json !== undefined) {
       headers["Content-Type"] = "application/json";
       body = JSON.stringify(options.json);
     }
@@ -483,12 +481,7 @@ export class Transport {
         }
       }
     } finally {
-      controller.abort();
-      try {
-        reader.releaseLock();
-      } catch {
-        // Safe lock release
-      }
+      reader.releaseLock();
     }
   }
 }

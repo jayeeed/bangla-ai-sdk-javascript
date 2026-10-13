@@ -1,10 +1,7 @@
 import { Transport } from "./transport.js";
-import { BanglaAIError } from "./exceptions.js";
 
 /**
  * Normalizes input (string path, Buffer, Uint8Array, Blob, File) into a Blob for FormData.
- * Safely validates local filesystem paths in Node.js environments.
- *
  * @param {string | Uint8Array | Blob | File} input
  * @param {string} [filename]
  * @param {string} [contentType]
@@ -30,20 +27,14 @@ async function toBlob(input, filename = "file.bin", contentType = "application/o
     try {
       const fs = await import("node:fs/promises");
       const pathMod = await import("node:path");
-      const stat = await fs.stat(input);
-      if (stat.isFile()) {
-        const data = await fs.readFile(input);
-        const fn = pathMod.basename(input);
-        return {
-          blob: new Blob([data], { type: contentType }),
-          filename: fn,
-        };
-      }
-    } catch (err) {
-      // If caller passed a file path that cannot be read, fail explicitly
-      if (input.includes("/") || input.includes("\\") || /\.[a-z0-9]{2,5}$/i.test(input)) {
-        throw new BanglaAIError(`Failed to load file input "${input}": ${err.message}`);
-      }
+      const data = await fs.readFile(input);
+      const fn = pathMod.basename(input);
+      return {
+        blob: new Blob([data], { type: contentType }),
+        filename: fn,
+      };
+    } catch {
+      // If file reading fails, treat string as text
     }
   }
 
@@ -52,6 +43,21 @@ async function toBlob(input, filename = "file.bin", contentType = "application/o
     blob: new Blob([String(input)], { type: contentType }),
     filename,
   };
+}
+
+/**
+ * Generates an RFC 4122 compliant UUID v4 string.
+ * @returns {string}
+ */
+function generateUUID() {
+  if (typeof crypto !== "undefined" && crypto.randomUUID) {
+    return crypto.randomUUID();
+  }
+  return "xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx".replace(/[xy]/g, (c) => {
+    const r = (Math.random() * 16) | 0;
+    const v = c === "x" ? r : (r & 0x3) | 0x8;
+    return v.toString(16);
+  });
 }
 
 /**
@@ -71,12 +77,48 @@ class MeResource {
   }
 
   /**
-   * Updates user display settings.
-   * @param {{ displayName: string }} options
+   * Updates user display settings and profile metadata.
+   * @param {Object} options
+   * @param {string} [options.displayName]
+   * @param {string} [options.avatarUrl]
+   * @param {Record<string, any>} [options.preferences]
    */
-  async update({ displayName }) {
-    return await this._transport.request("PATCH", "/v1/me", {
-      json: { display_name: displayName },
+  async update({ displayName, avatarUrl, preferences } = {}) {
+    const json = {};
+    if (displayName !== undefined) json.display_name = displayName;
+    if (avatarUrl !== undefined) json.avatar_url = avatarUrl;
+    if (preferences !== undefined) json.preferences = preferences;
+
+    return await this._transport.request("PATCH", "/v1/me", { json });
+  }
+}
+
+/**
+ * Third-party Authentication Synchronization resource.
+ */
+class AuthResource {
+  constructor(transport) {
+    this._transport = transport;
+  }
+
+  /**
+   * Synchronizes Google / Firebase authentication token with PostgreSQL backend user record.
+   * @param {Object} [options]
+   * @param {string} [options.idToken] - Firebase or Google ID Token JWT
+   * @param {string} [options.token] - Alias for idToken
+   * @param {string} [options.provider] - Provider identifier ('google')
+   */
+  async syncGoogle({ idToken, token, provider = "google" } = {}) {
+    const jwt = idToken || token;
+    const json = { provider };
+    if (jwt) json.id_token = jwt;
+
+    const headers = {};
+    if (jwt) headers["Authorization"] = `Bearer ${jwt}`;
+
+    return await this._transport.request("POST", "/v1/auth/google", {
+      json,
+      headers: Object.keys(headers).length > 0 ? headers : undefined,
     });
   }
 }
@@ -101,42 +143,16 @@ class ApiKeysResource {
    * @param {Object} options
    * @param {string} options.name
    * @param {string[]} [options.scopes]
-   * @param {string} [options.rateLimitTier]
-   * @param {string} [options.rate_limit_tier]
-   * @param {string[]} [options.allowedIps]
-   * @param {string[]} [options.allowed_ips]
-   * @param {string[]} [options.allowedOrigins]
-   * @param {string[]} [options.allowed_origins]
    * @param {number} [options.expiresInDays]
-   * @param {number} [options.expires_in_days]
    * @returns {Promise<{ id: string, name: string, key_prefix: string, raw_api_key: string, scopes: string[], is_active: boolean }>}
    */
-  async create({
-    name,
-    scopes = ["all"],
-    rateLimitTier,
-    rate_limit_tier,
-    allowedIps,
-    allowed_ips,
-    allowedOrigins,
-    allowed_origins,
-    expiresInDays = 365,
-    expires_in_days,
-  } = {}) {
-    const payload = {
-      name,
-      scopes,
-      expires_in_days: expires_in_days ?? expiresInDays,
-    };
-    const tier = rateLimitTier ?? rate_limit_tier;
-    if (tier !== undefined) payload.rate_limit_tier = tier;
-    const ips = allowedIps ?? allowed_ips;
-    if (ips !== undefined) payload.allowed_ips = ips;
-    const origins = allowedOrigins ?? allowed_origins;
-    if (origins !== undefined) payload.allowed_origins = origins;
-
+  async create({ name, scopes = ["all"], expiresInDays = 365 } = {}) {
     return await this._transport.request("POST", "/v1/api-keys", {
-      json: payload,
+      json: {
+        name,
+        scopes,
+        expires_in_days: expiresInDays,
+      },
     });
   }
 
@@ -145,7 +161,7 @@ class ApiKeysResource {
    * @param {string} keyId
    */
   async delete(keyId) {
-    return await this._transport.request("DELETE", `/v1/api-keys/${encodeURIComponent(keyId)}`);
+    return await this._transport.request("DELETE", `/v1/api-keys/${keyId}`);
   }
 }
 
@@ -160,18 +176,15 @@ class WsTicketsResource {
   /**
    * Mints a single-use ticket for connecting to stateful WebSocket endpoints.
    * @param {Object} [options]
-   * @param {string} [options.target] - Target endpoint ('asr_call', 'tts_text', 'sts_livekit')
-   * @param {string} [options.streamSessionId] - Optional bound stream session ID
-   * @returns {Promise<{ ticket: string, target: string, ttl_seconds: number, expires_at: number }>}
+   * @param {string} [options.target] - Target modality ('asr_call', 'sts')
+   * @param {string} [options.streamSessionId] - Associated stream session ID
+   * @returns {Promise<{ ticket: string, target: string, ttl_seconds: number, expires_at: string }>}
    */
   async create({ target = "asr_call", streamSessionId } = {}) {
-    const payload = { target };
-    if (streamSessionId) {
-      payload.stream_session_id = streamSessionId;
-    }
-    return await this._transport.request("POST", "/v1/ws/tickets", {
-      json: payload,
-    });
+    const json = { target };
+    if (streamSessionId) json.stream_session_id = streamSessionId;
+
+    return await this._transport.request("POST", "/v1/ws/tickets", { json });
   }
 }
 
@@ -185,42 +198,66 @@ class ChatTurnsResource {
 
   /**
    * Streams LLM tokens in real time via Server-Sent Events (SSE).
+   * Automatically passes an RFC 4122 Idempotency-Key header.
    * @param {string} chatId
    * @param {Object} options
    * @param {string} options.content
    * @param {string[]} [options.attachmentIds]
    * @param {string} [options.branchId]
-   * @returns {AsyncGenerator<{ event: string, text: string, data: any }, void, unknown>}
+   * @param {string} [options.idempotencyKey]
+   * @returns {AsyncGenerator<{ event: string, text: string, turn_id?: string, branch_id?: string, data: any }, void, unknown>}
    */
-  async *stream(chatId, { content, attachmentIds = [], branchId } = {}) {
+  async *stream(chatId, { content, attachmentIds = [], branchId, idempotencyKey } = {}) {
     const payload = {
       content,
       attachment_ids: attachmentIds,
       branch_id: branchId,
     };
+    const key = idempotencyKey || generateUUID();
+    const headers = { "Idempotency-Key": key };
 
-    yield* this._transport.requestStream(`/v1/chats/${encodeURIComponent(chatId)}/turns`, {
+    for await (const chunk of this._transport.requestStream(`/v1/chats/${chatId}/turns`, {
       json: payload,
-    });
+      headers,
+    })) {
+      const parsed = chunk.data && typeof chunk.data === "object" ? chunk.data : {};
+      yield {
+        event: chunk.event,
+        text: chunk.text || parsed.text || "",
+        turn_id: parsed.turn_id,
+        branch_id: parsed.branch_id,
+        data: chunk.data,
+      };
+    }
   }
 
   /**
    * Convenience method to send a prompt and return the complete accumulated assistant text.
+   * Returns a string that also has .content and .turnId properties for convenience.
    * @param {string} chatId
    * @param {Object} options
    * @param {string} options.content
    * @param {string[]} [options.attachmentIds]
    * @param {string} [options.branchId]
+   * @param {string} [options.idempotencyKey]
    * @returns {Promise<string>}
    */
   async create(chatId, options) {
     let fullText = "";
+    let lastTurnId = null;
     for await (const chunk of this.stream(chatId, options)) {
       if (chunk.text) {
         fullText += chunk.text;
       }
+      if (chunk.turn_id) {
+        lastTurnId = chunk.turn_id;
+      }
     }
-    return fullText;
+    const resultStr = new String(fullText);
+    resultStr.content = fullText;
+    resultStr.text = fullText;
+    resultStr.turnId = lastTurnId;
+    return resultStr;
   }
 
   /**
@@ -229,7 +266,7 @@ class ChatTurnsResource {
    * @param {string} turnId
    */
   async cancel(chatId, turnId) {
-    return await this._transport.request("POST", `/v1/chats/${encodeURIComponent(chatId)}/turns/${encodeURIComponent(turnId)}/cancel`);
+    return await this._transport.request("POST", `/v1/chats/${chatId}/turns/${turnId}/cancel`);
   }
 }
 
@@ -254,7 +291,7 @@ class ChatAttachmentsResource {
     const formData = new FormData();
     formData.append("file", blob, filename);
 
-    return await this._transport.postMultipart(`/v1/chats/${encodeURIComponent(chatId)}/attachments`, formData);
+    return await this._transport.postMultipart(`/v1/chats/${chatId}/attachments`, formData);
   }
 
   /**
@@ -262,7 +299,7 @@ class ChatAttachmentsResource {
    * @param {string} chatId
    */
   async list(chatId) {
-    return await this._transport.request("GET", `/v1/chats/${encodeURIComponent(chatId)}/attachments`);
+    return await this._transport.request("GET", `/v1/chats/${chatId}/attachments`);
   }
 
   /**
@@ -271,16 +308,7 @@ class ChatAttachmentsResource {
    * @param {string} attachmentId
    */
   async get(chatId, attachmentId) {
-    return await this._transport.request("GET", `/v1/chats/${encodeURIComponent(chatId)}/attachments/${encodeURIComponent(attachmentId)}`);
-  }
-
-  /**
-   * Deletes an attachment from the chat session.
-   * @param {string} chatId
-   * @param {string} attachmentId
-   */
-  async delete(chatId, attachmentId) {
-    return await this._transport.request("DELETE", `/v1/chats/${encodeURIComponent(chatId)}/attachments/${encodeURIComponent(attachmentId)}`);
+    return await this._transport.request("GET", `/v1/chats/${chatId}/attachments/${attachmentId}`);
   }
 
   /**
@@ -290,7 +318,16 @@ class ChatAttachmentsResource {
    * @returns {Promise<Uint8Array>}
    */
   async download(chatId, attachmentId) {
-    return await this._transport.requestBinary("GET", `/v1/chats/${encodeURIComponent(chatId)}/attachments/${encodeURIComponent(attachmentId)}/download`);
+    return await this._transport.requestBinary("GET", `/v1/chats/${chatId}/attachments/${attachmentId}/download`);
+  }
+
+  /**
+   * Deletes an attachment from MinIO and unpins it from the conversation.
+   * @param {string} chatId
+   * @param {string} attachmentId
+   */
+  async delete(chatId, attachmentId) {
+    return await this._transport.request("DELETE", `/v1/chats/${chatId}/attachments/${attachmentId}`);
   }
 }
 
@@ -310,40 +347,18 @@ class ChatsResource {
    * @param {string} [options.title]
    * @param {string} [options.instructions]
    * @param {boolean} [options.enableWebSearch]
-   * @param {boolean} [options.enable_web_search]
-   * @param {string[]} [options.customToolNames]
-   * @param {string[]} [options.custom_tool_names]
-   * @param {Object} [options.profile]
-   * @param {string} [options.primaryService]
-   * @param {Record<string, any>} [options.metadata]
+   * @param {Record<string, any>} [options.profile]
    */
-  async create({
-    title = "New Chat",
-    instructions,
-    enableWebSearch = false,
-    enable_web_search,
-    customToolNames = [],
-    custom_tool_names,
-    profile,
-    primaryService = "llm",
-    metadata = {},
-  } = {}) {
+  async create({ title = "New Chat", instructions = "", enableWebSearch = false, profile } = {}) {
     const chatProfile = profile || {
-      instructions: instructions || "",
-      enable_web_search: enable_web_search ?? enableWebSearch,
-      custom_tool_names: custom_tool_names ?? customToolNames,
+      instructions,
+      enable_web_search: enableWebSearch,
     };
-
-    const payload = {
-      title,
-      profile: chatProfile,
-      primary_service: primaryService,
-    };
-    if (instructions) payload.instructions = instructions;
-    if (metadata && Object.keys(metadata).length > 0) payload.metadata = metadata;
-
     return await this._transport.request("POST", "/v1/chats", {
-      json: payload,
+      json: {
+        title,
+        profile: chatProfile,
+      },
     });
   }
 
@@ -352,15 +367,10 @@ class ChatsResource {
    * @param {Object} [options]
    * @param {number} [options.limit]
    * @param {number} [options.offset]
-   * @param {boolean} [options.includeArchived]
    */
-  async list({ limit = 50, offset = 0, includeArchived = false } = {}) {
+  async list({ limit = 50, offset = 0 } = {}) {
     return await this._transport.request("GET", "/v1/chats", {
-      params: {
-        limit,
-        offset,
-        include_archived: includeArchived,
-      },
+      params: { limit, offset },
     });
   }
 
@@ -369,30 +379,26 @@ class ChatsResource {
    * @param {string} chatId
    */
   async get(chatId) {
-    return await this._transport.request("GET", `/v1/chats/${encodeURIComponent(chatId)}`);
+    return await this._transport.request("GET", `/v1/chats/${chatId}`);
   }
 
   /**
-   * Updates chat thread title, archived flag, or context state.
+   * Updates title or system instructions for a chat thread.
    * @param {string} chatId
-   * @param {Object} [options]
+   * @param {Object} options
    * @param {string} [options.title]
-   * @param {boolean} [options.isArchived]
-   * @param {boolean} [options.is_archived]
-   * @param {Record<string, any>} [options.contextState]
-   * @param {Record<string, any>} [options.context_state]
+   * @param {string} [options.instructions]
+   * @param {boolean} [options.enableWebSearch]
    */
-  async update(chatId, { title, isArchived, is_archived, contextState, context_state } = {}) {
-    const payload = {};
-    if (title !== undefined) payload.title = title;
-    const archived = isArchived ?? is_archived;
-    if (archived !== undefined) payload.is_archived = archived;
-    const state = contextState ?? context_state;
-    if (state !== undefined) payload.context_state = state;
-
-    return await this._transport.request("PATCH", `/v1/chats/${encodeURIComponent(chatId)}`, {
-      json: payload,
-    });
+  async update(chatId, { title, instructions, enableWebSearch } = {}) {
+    const json = {};
+    if (title !== undefined) json.title = title;
+    if (instructions !== undefined || enableWebSearch !== undefined) {
+      json.profile = {};
+      if (instructions !== undefined) json.profile.instructions = instructions;
+      if (enableWebSearch !== undefined) json.profile.enable_web_search = enableWebSearch;
+    }
+    return await this._transport.request("PATCH", `/v1/chats/${chatId}`, { json });
   }
 
   /**
@@ -400,56 +406,35 @@ class ChatsResource {
    * @param {string} chatId
    */
   async delete(chatId) {
-    return await this._transport.request("DELETE", `/v1/chats/${encodeURIComponent(chatId)}`);
+    return await this._transport.request("DELETE", `/v1/chats/${chatId}`);
   }
 
   /**
-   * Lists chronological conversation turns along the active or specified branch.
+   * Retrieves full chronological message history for a chat.
    * @param {string} chatId
-   * @param {Object} [options]
-   * @param {string} [options.branchId]
-   * @param {string} [options.branch_id]
+   * @returns {Promise<Array<{ id: string, input_content: string, output_text: string, status: string }>>}
    */
-  async messages(chatId, { branchId, branch_id } = {}) {
-    const params = {};
-    const bId = branchId ?? branch_id;
-    if (bId) params.branch_id = bId;
-
-    return await this._transport.request("GET", `/v1/chats/${encodeURIComponent(chatId)}/messages`, {
-      params,
-    });
+  async messages(chatId) {
+    return await this._transport.request("GET", `/v1/chats/${chatId}/messages`);
   }
 
   /**
-   * Forks the conversation tree into a new branch from a prior turn.
+   * Forks or branches a conversation thread from an existing turn.
    * @param {string} chatId
    * @param {Object} options
    * @param {string} options.sourceBranchId
-   * @param {string} [options.source_branch_id]
-   * @param {string} [options.action]
-   * @param {string} [options.targetTurnId]
-   * @param {string} [options.target_turn_id]
+   * @param {string} options.targetTurnId
+   * @param {string} [options.action] - 'regenerate' or 'edit'
    * @param {string} [options.editedContent]
-   * @param {string} [options.edited_content]
    */
-  async createBranch(chatId, {
-    sourceBranchId,
-    source_branch_id,
-    action = "edit",
-    targetTurnId,
-    target_turn_id,
-    editedContent,
-    edited_content,
-  } = {}) {
-    const payload = {
-      source_branch_id: sourceBranchId ?? source_branch_id,
-      action,
-      target_turn_id: targetTurnId ?? target_turn_id,
-      edited_content: editedContent ?? edited_content,
-    };
-
-    return await this._transport.request("POST", `/v1/chats/${encodeURIComponent(chatId)}/branches`, {
-      json: payload,
+  async createBranch(chatId, { sourceBranchId, targetTurnId, action = "regenerate", editedContent } = {}) {
+    return await this._transport.request("POST", `/v1/chats/${chatId}/branches`, {
+      json: {
+        source_branch_id: sourceBranchId,
+        target_turn_id: targetTurnId,
+        action,
+        edited_content: editedContent,
+      },
     });
   }
 }
@@ -483,16 +468,23 @@ class OCRResource {
   }
 
   /**
-   * Submits a multi-page document to the Celery asynchronous processing queue.
+   * Submits a multi-page document to the asynchronous processing queue (HTTP 202).
    * @param {string | Uint8Array | Blob | File} file
    * @param {Object} [options]
+   * @param {string} [options.filename]
+   * @param {string} [options.languages]
+   * @param {string} [options.outputFormat]
    */
   async createJob(file, options = {}) {
     const { blob, filename } = await toBlob(file, options.filename || "document.pdf", "application/pdf");
     const formData = new FormData();
     formData.append("file", blob, filename);
 
-    return await this._transport.postMultipart("/v1/ocr/jobs", formData);
+    const params = {};
+    if (options.languages) params.languages = options.languages;
+    if (options.outputFormat) params.output_format = options.outputFormat;
+
+    return await this._transport.postMultipart("/v1/ocr/jobs", formData, { params });
   }
 
   /**
@@ -500,43 +492,47 @@ class OCRResource {
    * @param {string} jobId
    */
   async getJob(jobId) {
-    return await this._transport.request("GET", `/v1/ocr/jobs/${encodeURIComponent(jobId)}`);
+    return await this._transport.request("GET", `/v1/ocr/jobs/${jobId}`);
   }
 
   /**
    * Submits a document job and polls until completion.
-   * @param {string | Uint8Array | Blob | File} file
+   * @param {string | Uint8Array | Blob | File} fileOrJobId
    * @param {Object} [options]
    * @param {number} [options.pollInterval] - Polling interval in ms (default: 2000)
    * @param {number} [options.timeout] - Max wait time in ms (default: 300000)
    */
-  async waitForJob(file, options = {}) {
+  async waitForJob(fileOrJobId, options = {}) {
     const pollInterval = options.pollInterval ?? 2000;
     const timeout = options.timeout ?? 300000;
-    const jobRes = await this.createJob(file, options);
-    const jobId = jobRes?.job_id || jobRes?.id;
+    let jobId;
 
-    if (!jobId) {
-      throw new BanglaAIError("Failed to initiate OCR job: response did not include a valid job_id.");
+    if (typeof fileOrJobId === "string" && (fileOrJobId.startsWith("ocr_job_") || fileOrJobId.startsWith("job_"))) {
+      jobId = fileOrJobId;
+    } else if (fileOrJobId && typeof fileOrJobId === "object" && (fileOrJobId.job_id || fileOrJobId.id)) {
+      jobId = fileOrJobId.job_id || fileOrJobId.id;
+    } else {
+      const jobRes = await this.createJob(fileOrJobId, options);
+      jobId = jobRes.job_id || jobRes.id;
     }
 
     const startTime = Date.now();
     while (Date.now() - startTime < timeout) {
-      await new Promise((r) => setTimeout(r, pollInterval));
       const statusRes = await this.getJob(jobId);
-      if (statusRes.status === "completed" || statusRes.status === "SUCCESS") {
+      if (statusRes.status === "completed" || statusRes.status === "done" || statusRes.status === "SUCCESS") {
         return statusRes;
       }
-      if (statusRes.status === "failed" || statusRes.status === "FAILURE") {
-        throw new BanglaAIError(`OCR Job ${jobId} failed: ${statusRes.error || "Unknown error"}`);
+      if (statusRes.status === "failed" || statusRes.status === "error" || statusRes.status === "FAILURE") {
+        throw new Error(`OCR Job ${jobId} failed: ${statusRes.error || "Unknown error"}`);
       }
+      await new Promise((r) => setTimeout(r, pollInterval));
     }
-    throw new BanglaAIError(`OCR Job ${jobId} timed out after ${timeout}ms.`);
+    throw new Error(`OCR Job ${jobId} timed out after ${timeout}ms.`);
   }
 }
 
 /**
- * Speech-to-Text (ASR) resource.
+ * Speech Recognition (ASR), YouTube Transcription & Live Streaming resource.
  */
 class ASRResource {
   constructor(transport) {
@@ -544,44 +540,127 @@ class ASRResource {
   }
 
   /**
-   * Transcribes an audio file (.wav, .mp3, .ogg) with optional speaker diarization.
+   * Transcribes an audio file (.wav, .mp3, .ogg, .flac, .webm, .m4a) synchronously.
    * @param {string | Uint8Array | Blob | File} file
    * @param {Object} [options]
    * @param {string} [options.filename]
-   * @param {boolean} [options.diarize]
+   * @param {boolean} [options.diarize] - Enable speaker diarization
    */
   async transcribe(file, options = {}) {
     const { blob, filename } = await toBlob(file, options.filename || "audio.wav", "audio/wav");
     const formData = new FormData();
     formData.append("file", blob, filename);
-    formData.append("diarize", String(options.diarize ?? false));
 
-    return await this._transport.postMultipart("/v1/asr/transcribe/offline", formData);
-  }
+    const data = {};
+    if (options.diarize !== undefined) data.diarize = String(options.diarize);
 
-  /**
-   * Extracts audio from a YouTube video and transcribes it.
-   * @param {Object} options
-   * @param {string} options.url
-   * @param {boolean} [options.diarize]
-   * @param {boolean} [options.includeAudio]
-   */
-  async transcribeYoutube({ url, diarize = true, includeAudio = true } = {}) {
-    return await this._transport.request("POST", "/v1/asr/transcribe/youtube", {
-      json: { url, diarize, include_audio: includeAudio },
+    return await this._transport.postMultipart("/v1/asr/transcribe/offline", formData, {
+      params: options.diarize !== undefined ? { diarize: options.diarize } : undefined,
     });
   }
 
   /**
+   * Submits an audio file for asynchronous transcription (HTTP 202).
+   * @param {string | Uint8Array | Blob | File} file
+   * @param {Object} [options]
+   * @param {string} [options.filename]
+   * @param {boolean} [options.diarize]
+   */
+  async createJob(file, options = {}) {
+    const { blob, filename } = await toBlob(file, options.filename || "audio.wav", "audio/wav");
+    const formData = new FormData();
+    formData.append("file", blob, filename);
+
+    return await this._transport.postMultipart("/v1/asr/transcribe/offline/jobs", formData, {
+      params: options.diarize !== undefined ? { diarize: options.diarize } : undefined,
+    });
+  }
+
+  /**
+   * Polls the status of an asynchronous ASR transcription job.
+   * @param {string} jobId
+   */
+  async getJob(jobId) {
+    return await this._transport.request("GET", `/v1/asr/jobs/${jobId}`);
+  }
+
+  /**
+   * Submits an audio file and polls until transcription finishes.
+   * @param {string | Uint8Array | Blob | File} fileOrJobId
+   * @param {Object} [options]
+   * @param {number} [options.pollInterval]
+   * @param {number} [options.timeout]
+   */
+  async waitForJob(fileOrJobId, options = {}) {
+    const pollInterval = options.pollInterval ?? 2000;
+    const timeout = options.timeout ?? 300000;
+    let jobId;
+
+    if (typeof fileOrJobId === "string" && (fileOrJobId.startsWith("job_") || fileOrJobId.startsWith("asr_job_"))) {
+      jobId = fileOrJobId;
+    } else if (fileOrJobId && typeof fileOrJobId === "object" && (fileOrJobId.job_id || fileOrJobId.id)) {
+      jobId = fileOrJobId.job_id || fileOrJobId.id;
+    } else {
+      const res = await this.createJob(fileOrJobId, options);
+      jobId = res.job_id || res.id;
+    }
+
+    const startTime = Date.now();
+    while (Date.now() - startTime < timeout) {
+      const statusRes = await this.getJob(jobId);
+      if (statusRes.status === "completed" || statusRes.status === "done" || statusRes.status === "SUCCESS") {
+        return statusRes;
+      }
+      if (statusRes.status === "failed" || statusRes.status === "error" || statusRes.status === "FAILURE") {
+        throw new Error(`ASR Job ${jobId} failed: ${statusRes.error || "Unknown error"}`);
+      }
+      await new Promise((r) => setTimeout(r, pollInterval));
+    }
+    throw new Error(`ASR Job ${jobId} timed out after ${timeout}ms.`);
+  }
+
+  /**
+   * Transcribes audio directly from a YouTube video URL synchronously.
+   * @param {Object} options
+   * @param {string} options.url
+   * @param {boolean} [options.includeAudio]
+   * @param {boolean} [options.diarize]
+   */
+  async transcribeYoutube({ url, includeAudio = true, diarize = true } = {}) {
+    return await this._transport.request("POST", "/v1/asr/transcribe/youtube", {
+      json: { url, include_audio: includeAudio, diarize },
+    });
+  }
+
+  /**
+   * Submits a YouTube video URL for asynchronous transcription (HTTP 202).
+   * @param {Object} options
+   * @param {string} options.url
+   * @param {boolean} [options.includeAudio]
+   * @param {boolean} [options.diarize]
+   */
+  async createYoutubeJob({ url, includeAudio = true, diarize = true } = {}) {
+    return await this._transport.request("POST", "/v1/asr/transcribe/youtube/jobs", {
+      json: { url, include_audio: includeAudio, diarize },
+    });
+  }
+
+  // --- Real-Time Streaming Lifecycle ---
+  /**
    * Initiates a stateful live PCM16 speech recognition stream.
    * @param {Object} [options]
-   * @param {number} [options.sampleRate]
-   * @param {number} [options.sample_rate]
-   * @returns {Promise<{ session_id: string, sample_rate: number }>}
+   * @param {number} [options.sampleRate] - Default 16000
+   * @param {boolean} [options.diarizationEnabled]
+   * @param {boolean} [options.revisionEnabled]
    */
-  async createStream({ sampleRate = 16000, sample_rate } = {}) {
+  async createStream({ sampleRate = 16000, diarizationEnabled = false, revisionEnabled = false } = {}) {
     return await this._transport.request("POST", "/v1/asr/streams", {
-      params: { sample_rate: sample_rate ?? sampleRate },
+      json: {
+        sample_rate: sampleRate,
+        diarization_enabled: diarizationEnabled,
+        revision_enabled: revisionEnabled,
+      },
+      params: { sample_rate: sampleRate },
     });
   }
 
@@ -591,51 +670,63 @@ class ASRResource {
    * @param {Uint8Array | Buffer} pcmBytes
    * @param {Object} [options]
    * @param {number} [options.sampleRate]
-   * @param {number} [options.sample_rate]
    * @param {number} [options.generation]
    * @param {number} [options.chunkSequence]
-   * @param {number} [options.chunk_sequence]
-   * @returns {Promise<{ transcript: string, partial_text: string, final_text: string, final_words: any[], event: string, turn_id?: string }>}
    */
-  async streamChunk(sessionId, pcmBytes, {
-    sampleRate = 16000,
-    sample_rate,
-    generation = 0,
-    chunkSequence = 0,
-    chunk_sequence,
-  } = {}) {
-    return await this._transport.request("POST", `/v1/asr/streams/${encodeURIComponent(sessionId)}/chunk/pcm16`, {
+  async streamChunkPcm(sessionId, pcmBytes, { sampleRate = 16000, generation = 0, chunkSequence = 0 } = {}) {
+    return await this._transport.request("POST", `/v1/asr/streams/${sessionId}/chunk/pcm16`, {
       body: pcmBytes,
       headers: { "Content-Type": "application/octet-stream" },
       params: {
-        sample_rate: sample_rate ?? sampleRate,
+        sample_rate: sampleRate,
         generation,
-        chunk_sequence: chunk_sequence ?? chunkSequence,
+        chunk_sequence: chunkSequence,
       },
     });
   }
 
   /**
-   * Finalizes live ASR stream and records usage.
-   * @param {string} sessionId
-   * @returns {Promise<any>}
+   * Alias for streamChunkPcm.
    */
-  async finishStream(sessionId) {
-    return await this._transport.request("POST", `/v1/asr/streams/${encodeURIComponent(sessionId)}/finish`);
+  async streamChunk(sessionId, pcmBytes, options) {
+    return await this.streamChunkPcm(sessionId, pcmBytes, options);
   }
 
   /**
-   * Aborts and releases a streaming session.
+   * Finalizes the live streaming session and records usage.
    * @param {string} sessionId
-   * @returns {Promise<any>}
+   */
+  async finishStream(sessionId) {
+    return await this._transport.request("POST", `/v1/asr/streams/${sessionId}/finish`);
+  }
+
+  /**
+   * Clears pending audio buffers and advances generation.
+   * @param {string} sessionId
+   */
+  async clearStream(sessionId) {
+    return await this._transport.request("POST", `/v1/asr/streams/${sessionId}/clear`);
+  }
+
+  /**
+   * Keeps streaming session alive to avoid inactivity timeout.
+   * @param {string} sessionId
+   */
+  async keepaliveStream(sessionId) {
+    return await this._transport.request("POST", `/v1/asr/streams/${sessionId}/keepalive`);
+  }
+
+  /**
+   * Aborts and destroys the streaming session.
+   * @param {string} sessionId
    */
   async abortStream(sessionId) {
-    return await this._transport.request("DELETE", `/v1/asr/streams/${encodeURIComponent(sessionId)}`);
+    return await this._transport.request("DELETE", `/v1/asr/streams/${sessionId}`);
   }
 }
 
 /**
- * Speech Synthesis (TTS) resource.
+ * Speech Synthesis (TTS) Higgs 3 resource.
  */
 class TTSResource {
   constructor(transport) {
@@ -643,27 +734,25 @@ class TTSResource {
   }
 
   /**
-   * Synthesizes Bengali text into full WAV audio using simple Higgs TTS synthesis.
+   * Synthesizes Bengali text into full WAV audio bytes.
    * @param {Object} options
    * @param {string} options.text
-   * @param {string} [options.voice]
-   * @param {string} [options.emotion]
-   * @param {number} [options.speed]
-   * @param {string} [options.format]
+   * @param {string} [options.voice] - Preset voice ('default', 'male', 'female')
+   * @param {string} [options.voiceId] - Custom uploaded voice ID
+   * @param {string} [options.responseFormat] - 'wav', 'mp3', 'flac', 'opus', 'aac', 'pcm'
    * @param {number} [options.firstSegmentMaxChars]
    * @returns {Promise<Uint8Array>}
    */
-  async synthesize({ text, voice = "male", emotion = "neutral", speed = 1.0, format = "wav", firstSegmentMaxChars = 45 } = {}) {
-    return await this._transport.requestBinary("POST", "/v1/tts/simple", {
-      json: {
-        text,
-        voice,
-        emotion,
-        speed,
-        format,
-        first_segment_max_chars: firstSegmentMaxChars,
-      },
-    });
+  async synthesize({ text, voice = "male", voiceId, responseFormat = "wav", firstSegmentMaxChars = 45 } = {}) {
+    const json = {
+      text,
+      voice,
+      response_format: responseFormat,
+      first_segment_max_chars: firstSegmentMaxChars,
+    };
+    if (voiceId) json.voice_id = voiceId;
+
+    return await this._transport.requestBinary("POST", "/v1/tts/simple", { json });
   }
 
   /**
@@ -677,9 +766,9 @@ class TTSResource {
     if (typeof process !== "undefined" && process.versions?.node) {
       const fs = await import("node:fs/promises");
       await fs.writeFile(filePath, audioBytes);
-    } else {
-      throw new BanglaAIError("synthesizeToFile is only supported in Node.js environments.");
+      return filePath;
     }
+    throw new Error("synthesizeToFile is only supported in Node.js environments.");
   }
 
   /**
@@ -687,55 +776,243 @@ class TTSResource {
    * @param {string} text
    * @param {Object} [options]
    * @param {string} [options.voice]
-   * @param {string} [options.emotion]
-   * @param {number} [options.speed]
+   * @param {string} [options.voiceId]
    * @param {number} [options.firstSegmentMaxChars]
    * @returns {AsyncGenerator<Uint8Array, void, unknown>}
    */
-  async *streamPcm(text, { voice = "male", emotion = "neutral", speed = 1.0, firstSegmentMaxChars = 45 } = {}) {
-    yield* this._transport.requestRawStream("/v1/tts/simple/stream", {
-      json: {
-        text,
-        voice,
-        emotion,
-        speed,
-        first_segment_max_chars: firstSegmentMaxChars,
-      },
-    });
+  async *streamPcm(text, { voice = "male", voiceId, firstSegmentMaxChars = 45 } = {}) {
+    const json = {
+      text,
+      voice,
+      first_segment_max_chars: firstSegmentMaxChars,
+    };
+    if (voiceId) json.voice_id = voiceId;
+
+    yield* this._transport.requestRawStream("/v1/tts/simple/stream", { json });
   }
 
   /**
-   * Generates zero-shot voice cloned speech with reference audio.
+   * Advanced voice synthesis with zero-shot voice cloning, emotional controls, and speeds.
    * @param {Object} options
    * @param {string} options.input
-   * @param {Object} [options.referenceAudio]
    * @param {string} [options.voice]
+   * @param {string} [options.voiceId]
+   * @param {string} [options.model]
    * @param {number} [options.speed]
+   * @param {string} [options.responseFormat]
+   * @param {Object} [options.controls] - { emotion, style, sound_effect }
+   * @param {Object} [options.customReference]
    * @returns {Promise<Uint8Array>}
    */
-  async advanced({ input, referenceAudio = {}, voice = "female", speed = 1.0 } = {}) {
-    return await this._transport.requestBinary("POST", "/v1/tts/advanced", {
-      json: {
-        input,
-        reference_audio: referenceAudio,
-        voice,
-        speed,
-      },
+  async advanced({
+    input,
+    voice = "female",
+    voiceId,
+    model = "bosonai/higgs-tts-3-4b",
+    speed = 1.0,
+    responseFormat = "wav",
+    controls,
+    customReference,
+  } = {}) {
+    const json = {
+      model,
+      input,
+      voice,
+      speed,
+      response_format: responseFormat,
+      stream: false,
+    };
+    if (voiceId) json.voice_id = voiceId;
+    if (controls) json.controls = controls;
+    if (customReference) json.custom_reference = customReference;
+
+    return await this._transport.requestBinary("POST", "/v1/tts/advanced", { json });
+  }
+
+  // --- Voice Profile Management ---
+  /**
+   * Uploads reference audio to clone a reusable voice profile.
+   * @param {string | Uint8Array | Blob | File} file
+   * @param {Object} [options]
+   * @param {string} [options.name]
+   * @param {string} [options.filename]
+   */
+  async createVoice(file, options = {}) {
+    const { blob, filename } = await toBlob(file, options.filename || "voice_sample.wav", "audio/wav");
+    const formData = new FormData();
+    formData.append("file", blob, filename);
+    if (options.name) formData.append("name", options.name);
+
+    return await this._transport.postMultipart("/v1/tts/voices", formData);
+  }
+
+  /**
+   * Fetches metadata for an uploaded custom voice profile.
+   * @param {string} voiceId
+   */
+  async getVoice(voiceId) {
+    return await this._transport.request("GET", `/v1/tts/voices/${voiceId}`);
+  }
+
+  /**
+   * Deletes an uploaded custom voice profile.
+   * @param {string} voiceId
+   */
+  async deleteVoice(voiceId) {
+    return await this._transport.request("DELETE", `/v1/tts/voices/${voiceId}`);
+  }
+
+  // --- Asynchronous Synthesis Jobs ---
+  /**
+   * Submits text for asynchronous synthesis (HTTP 202).
+   * @param {Object} options
+   * @param {string} options.text
+   * @param {string} [options.voice]
+   * @param {string} [options.voiceId]
+   * @param {string} [options.responseFormat]
+   */
+  async createJob({ text, voice = "default", voiceId, responseFormat = "wav" } = {}) {
+    const json = { text, voice, response_format: responseFormat };
+    if (voiceId) json.voice_id = voiceId;
+
+    return await this._transport.request("POST", "/v1/tts/simple/jobs", { json });
+  }
+
+  /**
+   * Polls the status and download metadata of an async synthesis job.
+   * @param {string} jobId
+   */
+  async getJob(jobId) {
+    return await this._transport.request("GET", `/v1/tts/jobs/${jobId}`);
+  }
+
+  /**
+   * Downloads synthesized audio bytes for a completed job.
+   * @param {string} jobId
+   * @returns {Promise<Uint8Array>}
+   */
+  async downloadJob(jobId) {
+    return await this._transport.requestBinary("GET", `/v1/tts/jobs/${jobId}/download`);
+  }
+
+  /**
+   * Submits or waits for an async TTS job to finish, returning audio bytes.
+   * @param {string | Object} textOrJob
+   * @param {Object} [options]
+   */
+  async waitForJob(textOrJob, options = {}) {
+    const pollInterval = options.pollInterval ?? 2000;
+    const timeout = options.timeout ?? 300000;
+    let jobId;
+
+    if (typeof textOrJob === "string" && (textOrJob.startsWith("job_") || textOrJob.startsWith("tts_job_"))) {
+      jobId = textOrJob;
+    } else if (textOrJob && typeof textOrJob === "object" && (textOrJob.job_id || textOrJob.id)) {
+      jobId = textOrJob.job_id || textOrJob.id;
+    } else {
+      const text = typeof textOrJob === "string" ? textOrJob : textOrJob?.text;
+      const res = await this.createJob({ text, ...options });
+      jobId = res.job_id || res.id;
+    }
+
+    const startTime = Date.now();
+    while (Date.now() - startTime < timeout) {
+      const statusRes = await this.getJob(jobId);
+      if (statusRes.status === "completed" || statusRes.status === "done" || statusRes.status === "SUCCESS") {
+        return await this.downloadJob(jobId);
+      }
+      if (statusRes.status === "failed" || statusRes.status === "error" || statusRes.status === "FAILURE") {
+        throw new Error(`TTS Job ${jobId} failed: ${statusRes.error || "Unknown error"}`);
+      }
+      await new Promise((r) => setTimeout(r, pollInterval));
+    }
+    throw new Error(`TTS Job ${jobId} timed out after ${timeout}ms.`);
+  }
+
+  // --- Stateful REST Text Streaming Sessions ---
+  /**
+   * Creates a stateful session for incremental token-by-token synthesis.
+   * @param {Object} [options]
+   * @param {string} [options.voice]
+   * @param {string} [options.voiceId]
+   */
+  async createSession({ voice = "default", voiceId } = {}) {
+    const json = { voice };
+    if (voiceId) json.voice_id = voiceId;
+
+    return await this._transport.request("POST", "/v1/tts/sessions", { json });
+  }
+
+  /**
+   * Feeds incremental text into the open streaming session.
+   * @param {string} sessionId
+   * @param {string} text
+   */
+  async sendSessionText(sessionId, text) {
+    return await this._transport.request("POST", `/v1/tts/sessions/${sessionId}/text`, {
+      json: { text },
     });
   }
 
   /**
-   * Discovers available neural speaker voices, styles, and audio formats.
+   * Finalizes the session to produce concluding audio.
+   * @param {string} sessionId
+   */
+  async finishSession(sessionId) {
+    return await this._transport.request("POST", `/v1/tts/sessions/${sessionId}/finish`);
+  }
+
+  /**
+   * Clears pending text in the session.
+   * @param {string} sessionId
+   */
+  async clearSession(sessionId) {
+    return await this._transport.request("POST", `/v1/tts/sessions/${sessionId}/clear`);
+  }
+
+  /**
+   * Refreshes the session TTL timer.
+   * @param {string} sessionId
+   */
+  async keepaliveSession(sessionId) {
+    return await this._transport.request("POST", `/v1/tts/sessions/${sessionId}/keepalive`);
+  }
+
+  /**
+   * Closes and cleans up the session.
+   * @param {string} sessionId
+   */
+  async deleteSession(sessionId) {
+    return await this._transport.request("DELETE", `/v1/tts/sessions/${sessionId}`);
+  }
+
+  // --- Discovery ---
+  /**
+   * Discovers available TTS models and preset voices.
    */
   async models() {
     return await this._transport.request("GET", "/v1/tts/models");
   }
 
   /**
-   * Alias for discovering models/voices.
+   * Alias for models().
    */
   async listVoices() {
     return await this.models();
+  }
+
+  /**
+   * Discovers gateway capabilities and supported formats.
+   */
+  async capabilities() {
+    return await this._transport.request("GET", "/v1/capabilities");
+  }
+
+  /**
+   * Inspects inference queue capacity and active load.
+   */
+  async queue() {
+    return await this._transport.request("GET", "/v1/queue");
   }
 }
 
@@ -789,7 +1066,6 @@ class STSResource {
       json: payload,
     });
 
-    // Provide convenience getter properties
     return {
       ...res,
       get roomName() { return this.room; },
@@ -830,6 +1106,7 @@ export class BanglaAI {
 
     // Modality Sub-resources
     this.me = new MeResource(this._transport);
+    this.auth = new AuthResource(this._transport);
     this.apiKeys = new ApiKeysResource(this._transport);
     this.wsTickets = new WsTicketsResource(this._transport);
     this.chats = new ChatsResource(this._transport);
@@ -837,10 +1114,6 @@ export class BanglaAI {
     this.asr = new ASRResource(this._transport);
     this.tts = new TTSResource(this._transport);
     this.sts = new STSResource(this._transport);
-
-    // Snake_case aliases for Python ecosystem compatibility
-    this.api_keys = this.apiKeys;
-    this.ws_tickets = this.wsTickets;
   }
 
   /**
@@ -858,9 +1131,4 @@ export class BanglaAI {
   async ready() {
     return await this._transport.request("GET", "/readyz");
   }
-
-  /**
-   * Closes underlying client resources (no-op for Fetch API; mirrors Python close()).
-   */
-  close() {}
 }
