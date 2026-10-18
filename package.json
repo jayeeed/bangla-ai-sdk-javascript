@@ -1,6 +1,6 @@
 {
   "name": "bangla-ai",
-  "version": "0.2.0",
+  "version": "0.1.0",
   "description": "Official JavaScript/TypeScript SDK for the Bangla AI Gateway (LLM, OCR, ASR, TTS, STS).",
   "main": "src/index.js",
   "module": "src/index.js",
@@ -33,16 +33,9 @@
   "license": "MIT",
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/jayeeed/bangla-ai-sdk-javascript.git"
+    "url": "https://github.com/jayeeed/bangla-ai-js"
   },
-  "homepage": "https://github.com/jayeeed/bangla-ai-sdk-javascript",
-  "exports": {
-    ".": {
-      "types": "./src/index.d.ts",
-      "import": "./src/index.js",
-      "default": "./src/index.js"
-    }
-  },
+  "homepage": "https://github.com/jayeeed/bangla-ai-js",
   "engines": {
     "node": ">=18.0.0"
   },
