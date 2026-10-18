@@ -3,7 +3,7 @@
 ![Async](https://img.shields.io/badge/async-supported-blue)
 ![Node.js](https://img.shields.io/badge/node-18+-green)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
-[![npm version](https://img.shields.io/badge/npm-0.1.0-orange.svg)](https://www.npmjs.com/package/bangla-ai)
+[![npm version](https://img.shields.io/badge/npm-0.2.1-orange.svg)](https://www.npmjs.com/package/bangla-ai)
 
 The official Node.js, Browser, and TypeScript SDK for the **Bangla AI Gateway**. Easily connect your applications to state-of-the-art Bengali language AI microservices:
 - 💬 **Large Language Model (LLM)**: Multi-branch conversation trees, message turn history, automatic idempotency keys, and token-by-token SSE streaming.

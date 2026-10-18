@@ -4,6 +4,7 @@ on:
   push:
     branches:
       - main
+  workflow_dispatch:
 
 jobs:
   build-and-publish:
@@ -21,19 +22,19 @@ jobs:
       - name: Set up Node.js
         uses: actions/setup-node@v4
         with:
-          node-version: "20"
+          node-version: "22"
           registry-url: "https://registry.npmjs.org"
 
       - name: Install dependencies
         run: npm ci || npm install
 
-      - name: Syntax check
-        run: node --check src/index.js
+      - name: Run test suite
+        run: npm test
 
       - name: Publish to npm
         run: npm publish --access public
         env:
-          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN || secrets.NODE_AUTH_TOKEN || secrets.NPM_AUTH_TOKEN }}
 
       - name: Confirm upload
         run: echo "✅ Successfully published package to npm."
